@@ -1,9 +1,10 @@
 module.exports = function (api) {
   api.cache(true);
   return {
-    presets: ["babel-preset-expo"], // O la tua configurazione esistente
+    presets: ["babel-preset-expo"],
     plugins: [
-      "nativewind/babel", // Aggiunto il plugin NativeWind
+      // "nativewind/babel", // Rimosso
+      "react-native-reanimated/plugin", // DEVE essere l'ultimo plugin
     ],
   };
-};
+}; 
