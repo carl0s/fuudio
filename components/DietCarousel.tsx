@@ -44,6 +44,7 @@ interface ApiWeek {
 interface CarouselApiDay {
   id: string; // ID del giorno API
   dayName: string; // Nome del giorno (es. "Lunedì")
+  date: Date; // <-- AGGIUNTA DATA
   mealOptions: ApiMealOption[]; // Array completo delle opzioni per quel giorno
 }
 
@@ -90,10 +91,20 @@ const MealGroup: React.FC<MealGroupProps> = React.memo(({
 
     return (
         <View 
-            style={styles.mealGroupContainer}
+            style={[
+                styles.mealGroupContainer,
+                // Applica stile di centraggio verticale solo quando collassato
+                isCollapsed && styles.collapsedMealGroupContainer 
+            ]} 
             onLayout={onLayout} 
         >
-            <TouchableOpacity onPress={handlePress} activeOpacity={isNext ? 1 : 0.7} style={styles.mealGroupHeader}>
+            {/* Rimuoviamo marginBottom da qui se collassato? */}
+            <TouchableOpacity 
+                onPress={handlePress} 
+                activeOpacity={isNext ? 1 : 0.7} 
+                // Stile header modificato inline per rimuovere marginBottom quando collassato
+                style={[styles.mealGroupHeader, isCollapsed && { marginBottom: 0 }]} 
+            >
                  <Text 
                     style={[
                         styles.mealGroupTitle, 
@@ -129,17 +140,19 @@ const MealGroup: React.FC<MealGroupProps> = React.memo(({
 // ------------------------------------------------------------------
 
 function DietCarousel() {
-    const [carouselDays, setCarouselDays] = useState<CarouselApiDay[]>([]);
+    const [allDays, setAllDays] = useState<CarouselApiDay[]>([]); // Ora contiene TUTTI i giorni
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-    const [todayIndex, setTodayIndex] = useState<number>(-1);
-    const flatListRef = useRef<FlatList<CarouselApiDay>>(null);
-    
-    // --- Refs per Auto-Scroll (ora a livello di DietCarousel) ---
-    const todayScrollViewRef = useRef<ScrollView>(null);
-    const didAutoScrollTodayRef = useRef(false);
-    // -----------------------------------------------------------
+    const [todayIndex, setTodayIndex] = useState<number>(-1); // Indice di OGGI nell'array allDays
+    const [displayedDayIndex, setDisplayedDayIndex] = useState<number>(-1); // Indice del giorno MOSTRATO
 
+    // --- RIMOSSI Ref FlatList e AutoScroll ---
+    // const flatListRef = useRef<FlatList<CarouselApiDay>>(null);
+    // const todayScrollViewRef = useRef<ScrollView>(null);
+    // const didAutoScrollTodayRef = useRef(false);
+    // -----------------------------------------
+
+    // Effetto per Fetch Dati (Carica tutti i giorni in allDays e CALCOLA LE DATE)
     useEffect(() => {
         const fetchDietData = async () => {
             const apiUrl = process.env.EXPO_PUBLIC_API_URL;
@@ -158,63 +171,69 @@ function DietCarousel() {
                 }
                 const apiWeeks: ApiWeek[] = await response.json();
 
-                // --- TRASFORMAZIONE DATI PER TUTTE LE SETTIMANE --- 
                 if (apiWeeks && apiWeeks.length > 0) {
-                    let cumulativeDayIndex = 0; // Indice progressivo nel flattened array
+                    let cumulativeDayIndex = 0;
                     let currentDayFoundIndex = -1;
-                    const todayDayOfWeek = new Date().getDay(); // 0=Dom, 1=Lun, ...
+                    const todayDayOfWeek = new Date().getDay();
+                    const todayDate = new Date(); // Data di oggi per riferimento
+                    todayDate.setHours(0, 0, 0, 0); // Normalizza all'inizio del giorno
 
-                    // Usiamo flatMap per processare tutte le settimane e giorni in un unico array
-                    const transformedDays = apiWeeks.flatMap((apiWeek, weekIndex) => 
+                    // 1. Trasforma i dati base senza data
+                    const transformedDaysWithoutDate = apiWeeks.flatMap((apiWeek, weekIndex) => 
                         apiWeek.days.map((apiDay, dayIndexInWeek) => {
-                            if (!apiDay || !apiDay.mealOptions) return null; // Salta giorni invalidi
+                            if (!apiDay || !apiDay.mealOptions) return null;
 
-                            // Controlla se questo è il giorno corrente
                             const apiDayIndex = dayIndexMap[apiDay.name.toLowerCase()];
-                            // Verifica giorno della settimana E che sia nella PRIMA settimana (o logica diversa se serve "oggi" anche nelle settimane future)
-                            // PER ORA: Troviamo solo il primo "oggi"
-                            if (apiDayIndex === todayDayOfWeek && currentDayFoundIndex === -1) { // Troviamo solo la prima occorrenza di oggi
+                            if (apiDayIndex === todayDayOfWeek && currentDayFoundIndex === -1) {
                                 currentDayFoundIndex = cumulativeDayIndex;
                             }
 
-                            // Ordina le mealOptions per tipo di pasto
                             const sortedMealOptions = [...apiDay.mealOptions].sort((a, b) => {
                                 const orderA = mealOrderConstant[a.meal.name] ?? 99;
                                 const orderB = mealOrderConstant[b.meal.name] ?? 99;
                                 return orderA - orderB;
                             });
-
                             const uniqueDayId = `week-${apiWeek.id ?? weekIndex}-day-${apiDay.id ?? dayIndexInWeek}`;
-                            cumulativeDayIndex++; // Incrementa l'indice assoluto
+                            cumulativeDayIndex++;
 
                             return {
-                                id: uniqueDayId, // ID univoco per FlatList
+                                tempId: uniqueDayId, // Usiamo un ID temporaneo
                                 dayName: apiDay.name ?? 'Giorno Sconosciuto',
                                 mealOptions: sortedMealOptions,
+                                originalIndex: cumulativeDayIndex - 1, // Salviamo l'indice originale per il calcolo data
                             };
                         })
-                    ).filter((day): day is CarouselApiDay => day !== null);
-                    
-                    // Se non abbiamo trovato 'oggi' (magari API non parte da lunedì?), default a 0
-                    if (currentDayFoundIndex === -1 && transformedDays.length > 0) {
-                        console.warn("Indice 'today' non trovato, impostando a 0");
-                        // Potrebbe essere necessario aggiustare logica se il piano inizia a metà settimana
+                    ).filter((day) => day !== null);
+
+                    // Se non trovato oggi, default a 0
+                    if (currentDayFoundIndex === -1 && transformedDaysWithoutDate.length > 0) {
                         currentDayFoundIndex = 0; 
                     }
 
-                    console.log(`Trovate ${apiWeeks.length} settimane, ${transformedDays.length} giorni totali.`);
-                    console.log('Final transformedDays array (snippet):', JSON.stringify(transformedDays.slice(0, 2), null, 2)); // Mostra solo i primi 2 per brevità
+                    // 2. Calcola le date e crea l'array finale
+                    const finalDaysWithDates = transformedDaysWithoutDate.map((tempDay) => {
+                         const dateOffset = tempDay.originalIndex - currentDayFoundIndex;
+                         const calculatedDate = new Date(todayDate);
+                         calculatedDate.setDate(todayDate.getDate() + dateOffset);
 
-                    setCarouselDays(transformedDays);
+                         return {
+                             id: tempDay.tempId,
+                             dayName: tempDay.dayName,
+                             date: calculatedDate, // <-- Data calcolata aggiunta
+                             mealOptions: tempDay.mealOptions,
+                         };
+                    });
+
+                    console.log(`Caricati ${finalDaysWithDates.length} giorni totali con date calcolate. Today index: ${currentDayFoundIndex}`);
+                    setAllDays(finalDaysWithDates as CarouselApiDay[]); // Cast al tipo corretto
                     setTodayIndex(currentDayFoundIndex);
-                    console.log('Indice giorno corrente per FlatList:', currentDayFoundIndex);
+                    setDisplayedDayIndex(currentDayFoundIndex !== -1 ? currentDayFoundIndex : 0);
 
                 } else {
-                     setCarouselDays([]); // Nessuna settimana trovata
+                     setAllDays([]);
                      setTodayIndex(-1);
+                     setDisplayedDayIndex(-1);
                 }
-                // ---------------------------
-
             } catch (err: any) {
                 console.error("Errore fetch o trasformazione dieta:", err);
                 setError(err.message || 'Errore durante il caricamento/elaborazione dei dati');
@@ -226,265 +245,218 @@ function DietCarousel() {
         fetchDietData();
     }, []);
 
-    // Effetto per resettare il flag di auto-scroll quando cambia il giorno "today"
-    // o quando i dati cambiano radicalmente.
-    useEffect(() => {
-        console.log("Resetting didAutoScrollTodayRef due a cambio todayIndex.");
-        didAutoScrollTodayRef.current = false;
-    }, [todayIndex]); // Si resetta se l'indice di oggi cambia
+    // --- RIMOSSO useEffect per resettare didAutoScrollTodayRef ---
 
-    // Funzione per renderizzare un singolo item (giornata)
-    const renderItem = useCallback(({ item, index }: { item: CarouselApiDay; index: number }) => {
-        const isToday = index === todayIndex;
-
-        // Logica per trovare il prossimo pasto E determinare lo stato (passato/prossimo/futuro)
-        let nextMealName: string | null = null;
-        let pastMealNames = new Set<string>();
-        const currentHour = new Date().getHours(); // Calcola una sola volta
-
-        if (isToday) {
-            for (const mealName of mealOrderArray) {
-                const mealTime = mealApproximateTimes[mealName] ?? 25; // Orario default alto
-                
-                if (mealTime <= currentHour) { // Se l'ora del pasto è passata o è l'ora corrente
-                    pastMealNames.add(mealName);
-                } else if (nextMealName === null) { // Se è futuro e non abbiamo ancora trovato il prossimo
-                    nextMealName = mealName;
-                }
-                // Se è futuro ma abbiamo già trovato il next, non facciamo nulla (sarà isFutureAfterNext)
-            }
-            // console.log(`Current Hour: ${currentHour}, Past: ${[...pastMealNames].join(', ')}, Next: ${nextMealName}`);
-        }
-        
-        // Raggruppamento e Ordinamento Pasti (invariato)
-        const groupedMeals = item.mealOptions.reduce((acc, option) => {
-            const mealName = option.meal.name;
-            if (!acc[mealName]) {
-                acc[mealName] = [];
-            }
-            acc[mealName].push(option);
-            // Ordina le opzioni per variante (Opzione 1, Opzione 2, ...)
-            acc[mealName].sort((a, b) => a.variant.localeCompare(b.variant));
-            return acc;
-        }, {} as Record<string, ApiMealOption[]>);
-
-        const sortedMealNames = Object.keys(groupedMeals).sort((a, b) => {
-            // Usa la mappa mealOrderConstant per l'ordinamento logico
-            const indexA = mealOrderConstant[a] ?? 99; 
-            const indexB = mealOrderConstant[b] ?? 99;
-            // Metti pasti non riconosciuti alla fine
-            if (indexA === 99) return 1;
-            if (indexB === 99) return -1;
-            return indexA - indexB;
-        });
-
-        return (
-            <View style={styles.flatListItemContainer}> 
-                 <View style={[styles.carouselItemContainer, isToday ? styles.todayHighlight : {}]}>
-                    <Text style={styles.dayText}>{item.dayName}</Text>
-
-                    <ScrollView 
-                        ref={isToday ? todayScrollViewRef : null} 
-                        style={styles.mealsScrollView} 
-                        contentContainerStyle={styles.mealsScrollViewContent} 
-                        showsVerticalScrollIndicator={false} 
-                        scrollEventThrottle={16} // Opzionale: per performance se avessimo onScroll
-                    > 
-                        {sortedMealNames.map((mealName) => {
-                            // Determina lo stato del pasto per oggi
-                            const isPast = isToday && pastMealNames.has(mealName);
-                            const isNextMeal = isToday && mealName === nextMealName;
-                            // È futuro se non è passato e non è il prossimo
-                            const isFutureAfterNext = isToday && !isPast && !isNextMeal;
-                            
-                            // initialCollapsed è vero se è passato o futuro (ma non next)
-                            const initialCollapsed = isToday && (isPast || isFutureAfterNext);
-
-                            return (
-                                <MealGroup
-                                    key={mealName}
-                                    mealName={mealName}
-                                    options={groupedMeals[mealName]}
-                                    isToday={isToday}
-                                    isNext={isNextMeal}
-                                    isPast={isPast} // Passa lo stato
-                                    isFutureAfterNext={isFutureAfterNext} // Passa lo stato
-                                    // initialCollapsed non serve più qui, lo calcola MealGroup
-                                    // onLayout (invariato)
-                                    onLayout={isNextMeal ? (event) => {
-                                         const layout = event.nativeEvent.layout;
-                                         const targetY = layout.y;
-                                         if (!didAutoScrollTodayRef.current && todayScrollViewRef.current) {
-                                             console.log(`Layout measured for ${mealName}: y=${targetY}. Attempting auto-scroll.`);
-                                             todayScrollViewRef.current.scrollTo({ y: targetY, animated: true });
-                                             didAutoScrollTodayRef.current = true; 
-                                         }
-                                     } : undefined}
-                                />
-                            );
-                        })}
-                    </ScrollView> 
-                </View>
-            </View>
-        );
-    }, [todayIndex]); // Dipendenza principale per isToday e reset implicito dei ref interni (che non ci sono più)
-
-    // Funzione per estrarre le chiavi per FlatList
-    const keyExtractor = useCallback((item: CarouselApiDay) => item.id, []);
-
-    // Funzione getItemLayout per ottimizzare lo scroll
-    const getItemLayout = useCallback((data: CarouselApiDay[] | null | undefined, index: number) => ({ 
-        length: width, // Ogni item occupa l'intera larghezza
-        offset: width * index,
-        index,
-    }), []);
-
-    const scrollToToday = () => {
-        if (todayIndex !== -1 && flatListRef.current) {
-            console.log('Scrolling FlatList manuale a indice:', todayIndex);
-            flatListRef.current.scrollToIndex({ index: todayIndex, animated: true });
+    // --- Handlers per Navigazione Header ---
+    const handlePrevDay = () => {
+        setDisplayedDayIndex((prevIndex) => (prevIndex > 0 ? prevIndex - 1 : 0));
+    };
+    const handleNextDay = () => {
+        setDisplayedDayIndex((prevIndex) => (prevIndex < allDays.length - 1 ? prevIndex + 1 : prevIndex));
+    };
+    const goToToday = () => {
+        if (todayIndex !== -1) {
+            setDisplayedDayIndex(todayIndex);
         }
     };
+    // -------------------------------------
 
-    // Mostra indicatore di caricamento
-    if (loading) {
-        return (
-            <View style={styles.centeredMessage}>
-                <ActivityIndicator size="large" />
-                <Text>Caricamento dieta...</Text>
-            </View>
-        );
+    // --- Logica di Rendering Spostata Qui ---
+    const currentDayData = allDays[displayedDayIndex];
+    const isDisplayingToday = displayedDayIndex === todayIndex;
+
+    let nextMealName: string | null = null;
+    let pastMealNames = new Set<string>();
+    if (currentDayData && isDisplayingToday) { // Calcola solo se stiamo mostrando oggi
+        const currentHour = new Date().getHours();
+        for (const mealName of mealOrderArray) {
+            const mealTime = mealApproximateTimes[mealName] ?? 25;
+            if (mealTime <= currentHour) {
+                pastMealNames.add(mealName);
+            } else if (nextMealName === null) {
+                nextMealName = mealName;
+            }
+        }
     }
 
-    // Mostra messaggio di errore
-    if (error) {
-        return (
-            <View style={styles.centeredMessage}>
-                <Text style={styles.errorText}>Errore caricamento dieta:</Text>
-                <Text style={styles.errorText}>{error}</Text>
-            </View>
-        );
-    }
+    // Raggruppa e ordina i pasti per il giorno VISUALIZZATO
+    const groupedMeals = currentDayData?.mealOptions?.reduce((acc, option) => {
+        const mealName = option.meal.name;
+        if (!acc[mealName]) acc[mealName] = [];
+        acc[mealName].push(option);
+        acc[mealName].sort((a, b) => a.variant.localeCompare(b.variant));
+        return acc;
+    }, {} as Record<string, ApiMealOption[]>) ?? {}; // Default a oggetto vuoto
 
+    const sortedMealNames = Object.keys(groupedMeals).sort((a, b) => {
+        const indexA = mealOrderConstant[a] ?? 99;
+        const indexB = mealOrderConstant[b] ?? 99;
+        return indexA - indexB;
+    });
+    // -----------------------------------------
+
+    // --- Gestione Stati Loading/Error (Semplificata) ---
+    if (loading) return <View style={styles.centeredMessage}><ActivityIndicator size="large" /><Text>Caricamento...</Text></View>;
+    if (error) return <View style={styles.centeredMessage}><Text style={styles.errorText}>Errore: {error}</Text></View>;
+    if (!currentDayData) return <View style={styles.centeredMessage}><Text>Nessun dato giornaliero disponibile.</Text></View>;
+    // ---------------------------------------------------
+
+    // --- RETURN con ScrollView Verticale e Header Navigazione ---
     return (
-        <View style={styles.carouselWrapper}>
-             {/* Bottone "Vai a Oggi" */}
-             {todayIndex !== -1 && (
-                 <TouchableOpacity onPress={scrollToToday} style={styles.todayButtonContainer}>
-                     <View style={styles.todayButton}>
-                         <Text style={styles.todayButtonText}>VAI A OGGI</Text>
-                     </View>
-                     <View style={styles.todayButtonArrow} />
-                 </TouchableOpacity>
-             )}
+        <ScrollView style={styles.scrollViewContainer}>
+            {/* Header di Navigazione Giorno */} 
+            <View style={styles.dayHeaderContainer}>
+                <TouchableOpacity onPress={handlePrevDay} disabled={displayedDayIndex === 0} style={styles.navButton}>
+                    <Feather name="chevron-left" size={28} color={displayedDayIndex === 0 ? '#555' : '#fcfcfc'} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={goToToday} style={styles.dayHeaderTitleContainer}>
+                    <Text style={styles.dayHeaderTitle}>
+                        {isDisplayingToday ? 'OGGI' : currentDayData.dayName.toUpperCase()}
+                    </Text>
+                    {/* Mostra sempre sottotitolo con Nome Giorno e Data Numerica */} 
+                    <Text style={styles.dayHeaderSubtitle}>
+                         ({currentDayData.dayName}, {currentDayData.date.toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })})
+                    </Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleNextDay} disabled={displayedDayIndex === allDays.length - 1} style={styles.navButton}>
+                    <Feather name="chevron-right" size={28} color={displayedDayIndex === allDays.length - 1 ? '#555' : '#fcfcfc'} />
+                </TouchableOpacity>
+            </View>
 
-            {/* --- USO FlatList AL POSTO DEL CAROUSEL --- */}
-            {carouselDays.length > 0 ? (
-                <FlatList
-                    ref={flatListRef}
-                    data={carouselDays}
-                    renderItem={renderItem}
-                    keyExtractor={keyExtractor}
-                    horizontal={true}
-                    pagingEnabled={true}
-                    showsHorizontalScrollIndicator={false}
-                    style={styles.flatListStyle} // Stile per la FlatList stessa
-                    initialScrollIndex={todayIndex !== -1 ? todayIndex : 0}
-                    getItemLayout={getItemLayout} // Ottimizzazione
-                    windowSize={5} // Ottimizzazione: numero di item da renderizzare fuori schermo
-                    initialNumToRender={3} // Ottimizzazione: numero di item da renderizzare all'inizio
-                    maxToRenderPerBatch={3} // Ottimizzazione: numero di item da renderizzare per batch
-                />
-            ) : (
-                 <View style={styles.centeredMessage}>
-                     <Text>Nessun piano dietetico trovato.</Text>
-                 </View>
-            )}
-        </View>
+            {/* Elenco Pasti del Giorno Visualizzato */} 
+            <View style={styles.mealsListContainer}> 
+                {sortedMealNames.map((mealName) => {
+                    // Determina lo stato del pasto per il giorno VISUALIZZATO (se è oggi)
+                    const isPast = isDisplayingToday && pastMealNames.has(mealName);
+                    const isNextMeal = isDisplayingToday && mealName === nextMealName;
+                    const isFutureAfterNext = isDisplayingToday && !isPast && !isNextMeal;
+
+                    return (
+                        <MealGroup
+                            key={mealName} // Chiave rimane il nome del pasto
+                            mealName={mealName}
+                            options={groupedMeals[mealName]}
+                            isToday={isDisplayingToday} // Passa se stiamo visualizzando oggi
+                            isNext={isNextMeal}        // Passa se è il prossimo di oggi
+                            isPast={isPast}            // Passa se è passato di oggi
+                            isFutureAfterNext={isFutureAfterNext} // Passa se è futuro di oggi
+                            // onLayout non più necessario per auto-scroll
+                        />
+                    );
+                })}
+            </View>
+        </ScrollView>
     );
 }
 
-// Definiamo gli stili
+// Definiamo gli stili (AGGIORNATI per Shadcn-like)
 const styles = StyleSheet.create({
-    carouselWrapper: {
+    scrollViewContainer: { // Container principale scrollabile
         flex: 1,
+        backgroundColor: '#011d22', // Sfondo generale scuro
+    },
+    dayHeaderContainer: { // Header con frecce e nome giorno
+        flexDirection: 'row',
+        justifyContent: 'space-between',
         alignItems: 'center',
-        width: '100%',
+        paddingVertical: 15,
+        paddingHorizontal: 15,
+        // borderBottomWidth: 1, // Separatore opzionale
+        // borderBottomColor: 'rgba(255, 255, 255, 0.1)',
     },
-    flatListStyle: { // Stile per il componente FlatList
-        flex: 1, // Occupa lo spazio disponibile verticalmente
-        width: '100%',
+    navButton: {
+        padding: 5, // Area cliccabile
     },
-    flatListItemContainer: { // Contenitore per ogni item reso da FlatList
-        width: width, // Larghezza schermo intero per paging
-        height: '100%', // Altezza piena della FlatList
-        alignItems: 'center', // Centra la card al suo interno
-        justifyContent: 'center', // Centra la card al suo interno
-        // paddingVertical: 10, // Aggiungi padding se necessario tra bottone e card
-    },
-    carouselItemContainer: { // La card del giorno (ora dentro flatListItemContainer)
-        width: width * 0.9, // 90% larghezza schermo
-        height: '95%', // 95% dell'altezza di flatListItemContainer
-        borderRadius: 15,
-        padding: 12,
-        paddingTop: 12, 
+    dayHeaderTitleContainer: {
         alignItems: 'center',
-        backgroundColor: '#011d22',
-        // marginHorizontal Rimosso (gestito da flatListItemContainer)
-        justifyContent: 'flex-start', 
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.22,
-        shadowRadius: 2.22,
-        elevation: 3,
+    },
+    dayHeaderTitle: {
+        fontFamily: 'safiro-bold-webfont', // Font principale per header
+        fontSize: 22,
+        color: '#fcfcfc',
+        fontWeight: 'bold',
+    },
+    dayHeaderSubtitle: {
+        fontFamily: 'safiro-medium-webfont', // Font secondario
+        fontSize: 14,
+        color: '#aaa', // Colore più tenue
+        marginTop: 2,
+    },
+    mealsListContainer: { // Container per l'elenco dei MealGroup
+        paddingHorizontal: 15, // Padding laterale per i gruppi
+        paddingVertical: 10, 
+    },
+    mealGroupContainer: { 
+        backgroundColor: 'rgba(255, 255, 255, 0.03)',
+        borderRadius: 10, 
+        marginBottom: 15, 
+        paddingHorizontal: 12, // Padding laterale
+        paddingVertical: 12, // Padding verticale
         overflow: 'hidden',
     },
-    dayText: {
-        fontFamily: 'safiro-semibolditalic-webfont',
-        fontStyle: 'italic',
-        fontWeight: '500',
-        fontSize: 20,
-        color: 'white',
-        marginBottom: 15,
-        textAlign: 'left',
-        width: '100%', // Assicura che prenda tutta la larghezza della card
+    collapsedMealGroupContainer: { // Stile aggiuntivo quando collassato
+        justifyContent: 'center', // Centra l'header verticalmente
+        // Altezza minima per evitare che diventi troppo piccolo?
+        // minHeight: 50, 
     },
-    mealsContainer: { // Contenitore pasti - SFONDO RIMOSSO
+    mealGroupHeader: { 
+        flexDirection: 'row',
+        justifyContent: 'space-between', 
+        alignItems: 'center', 
         width: '100%',
-        // backgroundColor: 'yellow', // RIMOSSO
-        marginTop: 10,
-        // flex: 1, // RIMOSSO precedentemente, lo lasciamo rimosso
+        // Rimosso marginBottom da qui, gestito inline o nel container collassato
+        // marginBottom: 10, 
     },
-    mealCard: { // Stile Card Pasto - RIPRISTINATO
-        backgroundColor: 'rgba(255, 255, 255, 0.05)', // Sfondo leggermente trasparente
-        // height: 80, // RIMOSSO altezza fissa
+    mealGroupTitle: { 
+        fontFamily: 'Space Mono',
+        fontSize: 18,
+        color: '#fcfcfc',
+        fontWeight: '500',
+        paddingLeft: 4,
+        textAlign: 'left',
+    },
+    pastMealIcon: { 
+        marginLeft: 8, 
+        opacity: 0.6, // Opacità icona
+    },
+    mealOptionsContainer: { 
+        width: '100%',
+        // alignItems: 'center', // Card sono già larghe 95%
+        paddingLeft: 5, // Indentazione leggera opzioni
+        marginTop: 5,
+    },
+    mealCard: { 
+        backgroundColor: 'rgba(255, 255, 255, 0.08)', // Sfondo card opzione leggermente più visibile
         width: '95%',
-        marginBottom: 10,
-        padding: 10, // Padding normale
-        borderRadius: 8, // Angoli arrotondati
-        // borderWidth: 3, // RIMOSSO bordo debug
-        // borderColor: '#000000', // RIMOSSO bordo debug
-        justifyContent: 'center',
-        alignItems: 'flex-start', // Allinea testo a sinistra
-        alignSelf: 'flex-start',
-        // zIndex: 100, // RIMOSSO
+        marginBottom: 8,
+        padding: 10,
+        borderRadius: 6, 
+        alignSelf: 'center',
     },
-    mealCardTitle: {
-        fontFamily: 'safiro-medium-webfont', // Assicurati sia il font corretto
-        fontSize: 15, // Dimensione titolo normale
-        fontWeight: 'bold',
-        color: '#FFFFFF', // Testo BIANCO
-        marginBottom: 3, // Spazio sotto il titolo
+    mealCardTitle: { 
+        fontFamily: 'safiro-medium-webfont', 
+        fontSize: 15, 
+        color: '#FFFFFF', 
+        marginBottom: 3,
+        fontWeight: '500',
     },
     mealCardDescription: {
-        fontSize: 12, // Dimensione descrizione normale
-        color: '#E0E0E0', // Testo grigio chiaro
-        // textAlign: 'center', // RIMOSSO, default è sinistra
+        fontFamily: 'safiro-regular-webfont',
+        fontSize: 12, 
+        color: '#E0E0E0',
+        lineHeight: 16, // Migliora leggibilità
     },
-    todayButtonContainer: { alignItems: 'center', marginBottom: 15, marginTop: 10 },
-    todayButton: { backgroundColor: '#FF5733', paddingVertical: 8, paddingHorizontal: 25, borderRadius: 8 },
-    todayButtonText: { color: 'white', fontWeight: 'bold', fontSize: 14, fontFamily: 'safiro-medium-webfont' },
-    todayButtonArrow: { width: 0, height: 0, backgroundColor: 'transparent', borderStyle: 'solid', borderLeftWidth: 10, borderRightWidth: 10, borderTopWidth: 10, borderLeftColor: 'transparent', borderRightColor: 'transparent', borderTopColor: '#FF5733', marginTop: -1 },
+    // --- STILI HIGHLIGHT/DIMMING --- 
+    nextMealGroupTitle: { // Stile aggiuntivo per il titolo del prossimo pasto
+        fontSize: 20, 
+        fontWeight: 'bold',
+        color: '#FFFFFF',
+        opacity: 1, // Opacità piena
+    },
+    nextMealCardTitle: { opacity: 1 }, // Opacità piena per titolo opzione
+    nextMealCardDescription: { opacity: 1 }, // Opacità piena per descrizione opzione
+    // L'opacità 0.5 è applicata inline al mealGroupTitle per isDimmed
+    // ------------------------------
     centeredMessage: {
         flex: 1,
         justifyContent: 'center',
@@ -496,79 +468,7 @@ const styles = StyleSheet.create({
         color: 'red',
         textAlign: 'center',
     },
-    todayHighlight: {
-        // backgroundColor: '#FF4500', // Rimosso, usiamo bordo
-        borderColor: '#FF5733', // Bordo arancione per oggi
-        borderWidth: 2,
-    },
-    todayTickContainer: { // Cerchietto bianco con tick
-        position: 'absolute',
-        top: -15,
-        left: -15,
-        width: 30,
-        height: 30,
-        borderRadius: 15,
-        backgroundColor: 'white',
-        justifyContent: 'center',
-        alignItems: 'center',
-        zIndex: 1, // Sopra la card
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.25,
-        shadowRadius: 3.84,
-        elevation: 5,
-    },
-    todayTick: {
-        color: '#FF5733', // Colore della card
-        fontSize: 18,
-        fontWeight: 'bold',
-    },
-    mealGroupContainer: { 
-        width: '95%',
-        marginBottom: 15, 
-    },
-    mealGroupHeader: { 
-        flexDirection: 'row',
-        justifyContent: 'space-between', 
-        alignItems: 'center', 
-        width: '100%',
-        marginBottom: 8, 
-    },
-    mealGroupTitle: { 
-        fontFamily: 'Space Mono',
-        fontSize: 18,
-        color: '#fcfcfc',
-        paddingLeft: 4,
-        textAlign: 'left',
-        // Rimuoviamo l'opacità di default, verrà applicata condizionalmente
-    },
-    pastMealIcon: { // Stile per l'icona check
-        marginLeft: 8, // Spazio tra titolo e icona
-        opacity: 0.5, // Applichiamo opacità anche all'icona?
-    },
-    mealOptionsContainer: { 
-        width: '100%',
-        alignItems: 'center',
-        paddingLeft: 10, 
-    },
-    mealsScrollView: { // Riattivato per scroll verticale
-        flex: 1, // Occupa lo spazio rimanente nella card
-        width: '100%', 
-    },
-    mealsScrollViewContent: { // Riattivato
-        paddingBottom: 20, // Spazio alla fine dello scroll
-        alignItems: 'center', // Centra i gruppi di pasti
-    },
-    // --- STILI PER HIGHLIGHT PROSSIMO PASTO ---
-    nextMealGroupTitle: { 
-        fontSize: 21, 
-        fontWeight: 'bold',
-        color: '#FFFFFF',
-        opacity: 1, // Assicura opacità piena per il prossimo
-    },
-    nextMealCardTitle: { fontSize: 16, opacity: 1 },
-    nextMealCardDescription: { fontSize: 13, opacity: 1 },
-    // -----------------------------------
+    todayHighlight: { /* ... Rimuovere? Non serve più il bordo sulla card intera ... */ },
 });
 
 export default DietCarousel; 
